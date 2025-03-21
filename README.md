@@ -1,8 +1,13 @@
 📌 Trading Algorithmique avec Pine Script sur TradingView Pour développer ces algorithmes de trading, j'ai utilisé l'éditeur Pine Script de TradingView, ainsi que son testeur de stratégie pour analyser et optimiser les performances de mes modèles.
 
-Mes algorithmes reposent sur un indicateur personnalisé que j'ai conçu, en complément d'autres indicateurs techniques afin d'améliorer la prise de décision en trading.
+Démarche générale : 
 
-Objectifs du projet : ✅ Détecter des opportunités d'achat et de vente basées sur des conditions précises. ✅ Tester et valider les stratégies grâce à l'historique des prix. ✅ Optimiser les paramètres pour maximiser le rendement et minimiser les risques.
+Mon objectif était de reproduire un algorithme basé sur ma manière habituelle de trader. Je trade généralement en repérant des divergences RSI sur des niveaux clés que j’identifie en amont, comme les retracements de Fibonacci, les zones de demande et d’offre, les order blocks ou les trendlines. Quand le prix atteint ces niveaux, j’analyse le RSI sur différentes timeframes : s’il y a une divergence, je prends un trade ; sinon, je passe.
+Pour commencer, j’ai créé un indicateur de divergences haussières (bull div) quand le RSI est en survente (oversold). J’ai ensuite testé une stratégie simple basée uniquement sur ces divergences. Après backtesting, elle s’est révélée plutôt rentable avec un ratio risque/rendement (RR) de 1:1, utilisant un TP et un SL fixes de 2 %. Pour l’optimiser, j’ai cherché à ajouter des confluences et à améliorer la gestion des trades.
+Pour identifier des niveaux clés automatiquement, j’ai intégré les Points of Interest (POI), un indicateur que j’avais utilisé auparavant. Les POI sont calculés comme le midpoint entre le plus haut et le plus bas de la session de New York (11h-13h30), une période de forte volatilité et d’intérêt pour le marché. J’ai aussi testé un filtre EMA, mais je l’ai retiré car il n’apportait pas de valeur ajoutée. À la place, j’ai ajouté un filtre de volatilité basé sur l’ATR (Average True Range) pour éviter les cascades de liquidation et les sorties prématurées dues à des mouvements brusques.
+Enfin, j’ai ajusté la gestion des TP et SL. Pour les Longs, j’ai remarqué (notamment sur Bitcoin) que la volatilité influençait beaucoup mes résultats, alors j’ai utilisé un TP et un SL dynamiques basés sur 2x l’ATR. Pour les Shorts, la volatilité avait moins d’impact, donc j’ai opté pour un TP et un SL fixes à 5 %, ce qui restait efficace après tests.
+
+
 
 Résumé rapide de la stratégie : 
 
