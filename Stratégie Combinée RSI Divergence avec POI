@@ -1,258 +1,272 @@
 //@version=6
+// Déclare une stratégie en version 6 de PineScript avec affichage overlay (sur le graphique des prix)
 strategy("Stratégie Combinée RSI Divergence avec POI (Long ATR / Short 5%)", overlay=true, max_bars_back=5000, max_lines_count=500, max_labels_count=150)
 
 // === Inputs ===
+// Section des paramètres ajustables par l'utilisateur
 // Inputs pour le RSI
-length = input.int(14, title="Longueur RSI", minval=1)
-level30 = input.float(30, title="Niveau 30 (Long)", minval=0, maxval=100)
-level70 = input.float(70, title="Niveau 70 (Short)", minval=0, maxval=100)
-rsi_diff_min = input.float(2.0, title="Différence minimale RSI (%)", minval=0.1, step=0.1)
-price_diff_min = input.float(0.5, title="Différence minimale Prix (%)", minval=0.1, step=0.1)
+length = input.int(14, title="Longueur RSI", minval=1) // Longueur du RSI (14 est la valeur standard)
+level30 = input.float(30, title="Niveau 30 (Long)", minval=0, maxval=100) // Seuil RSI pour entrée Long (survente)
+level70 = input.float(70, title="Niveau 70 (Short)", minval=0, maxval=100) // Seuil RSI pour entrée Short (surachat)
+rsi_diff_min = input.float(2.0, title="Différence minimale RSI (%)", minval=0.1, step=0.1) // Différence minimale en % entre deux points RSI pour valider une divergence
+price_diff_min = input.float(0.5, title="Différence minimale Prix (%)", minval=0.1, step=0.1) // Différence minimale en % entre deux prix pour confirmer la divergence
 
-// Inputs pour les POI
-poi_range_session = input.session('1100-1330', 'POI Time', group="POI Settings")
-time_zone = input.string("UTC-5", title="TZ", group="POI Settings", options=["America/New_York", "UTC-4", "UTC-5"])
-track_taps_from = input.int(870, "Track Taps From Minutes after POI Range End", group="POI Settings")
-poi_window = input.int(10, "Fenêtre de retouchage POI (barres)", minval=1, group="POI Settings")
+// Inputs pour les POI (Points of Interest)
+poi_range_session = input.session('1100-1330', 'POI Time', group="POI Settings") // Fenêtre horaire pour détecter les POI (ex. 11h-13h30)
+time_zone = input.string("UTC-5", title="TZ", group="POI Settings", options=["America/New_York", "UTC-4", "UTC-5"]) // Fuseau horaire pour ajuster les sessions
+track_taps_from = input.int(870, "Track Taps From Minutes after POI Range End", group="POI Settings") // Délai en minutes après la fin de la session pour activer les POI
+poi_window = input.int(10, "Fenêtre de retouchage POI (barres)", minval=1, group="POI Settings") // Nombre de barres après un tap pour valider une entrée
 
 // Inputs pour la gestion des trades
-sl_atr_mult = input.float(2.0, title="Multiplicateur ATR pour SL Long", minval=0.1, step=0.1)
-tp_atr_mult = input.float(2.0, title="Multiplicateur ATR pour TP Long", minval=0.1, step=0.1)
-short_sl_percent = input.float(5.0, title="SL Short (% au-dessus)", minval=0.1, step=0.1)
-short_tp_percent = input.float(5.0, title="TP Short (% en dessous)", minval=0.1, step=0.1)
-atr_length = input.int(14, title="Longueur ATR", minval=1)
-max_volatility = input.float(3.0, title="Volatilité max (x ATR)", minval=1.0, step=0.1)
+sl_atr_mult = input.float(2.0, title="Multiplicateur ATR pour SL Long", minval=0.1, step=0.1) // Multiplicateur de l'ATR pour le Stop Loss des positions Long
+tp_atr_mult = input.float(2.0, title="Multiplicateur ATR pour TP Long", minval=0.1, step=0.1) // Multiplicateur de l'ATR pour le Take Profit des positions Long
+short_sl_percent = input.float(5.0, title="SL Short (% au-dessus)", minval=0.1, step=0.1) // Pourcentage au-dessus du prix d'entrée pour le SL des Shorts
+short_tp_percent = input.float(5.0, title="TP Short (% en dessous)", minval=0.1, step=0.1) // Pourcentage en dessous du prix d'entrée pour le TP des Shorts
+atr_length = input.int(14, title="Longueur ATR", minval=1) // Période de calcul de l'ATR (volatilité moyenne)
+max_volatility = input.float(3.0, title="Volatilité max (x ATR)", minval=1.0, step=0.1) // Seuil maximal de volatilité (multiple de l'ATR moyen)
 
 // === Calculs de base ===
-rsi = ta.rsi(close, length)
-lowest_rsi = ta.lowest(rsi, 5)
-highest_rsi = ta.highest(rsi, 5)
-cross_above_rsi = ta.crossover(rsi, rsi[1])
-cross_below_rsi = ta.crossunder(rsi, rsi[1])
+// Calculs initiaux pour les indicateurs utilisés
+rsi = ta.rsi(close, length) // Calcule le RSI basé sur le prix de clôture et la longueur définie
+lowest_rsi = ta.lowest(rsi, 5) // RSI le plus bas sur 5 barres pour éviter les faux creux
+highest_rsi = ta.highest(rsi, 5) // RSI le plus haut sur 5 barres pour éviter les faux sommets
+cross_above_rsi = ta.crossover(rsi, rsi[1]) // Détecte un croisement haussier du RSI (signal d'entrée Long)
+cross_below_rsi = ta.crossunder(rsi, rsi[1]) // Détecte un croisement baissier du RSI (signal d'entrée Short)
 
-// Calcul de l'ATR pour SL/TP long et filtre de volatilité
-atr = ta.atr(atr_length)
-volatility_filter = atr < max_volatility * ta.sma(atr, 14)
+// Calcul de l'ATR pour SL/TP Long et filtre de volatilité
+atr = ta.atr(atr_length) // Calcule l'Average True Range pour mesurer la volatilité
+volatility_filter = atr < max_volatility * ta.sma(atr, 14) // Filtre : volatilité actuelle doit être inférieure à 3x la moyenne mobile de l'ATR
 
 // === Variables pour les divergences RSI (Long) ===
-var float rsi_low1 = na
-var float price_low1 = na
-var int time_low1 = na
-var float rsi_low2 = na
-var float price_low2 = na
-var int time_low2 = na
-var float rsi_low3 = na
-var float price_low3 = na
-var int time_low3 = na
+// Variables persistantes pour suivre les creux RSI et prix (positions Long)
+var float rsi_low1 = na // Premier creux RSI détecté
+var float price_low1 = na // Prix au premier creux
+var int time_low1 = na // Timestamp du premier creux
+var float rsi_low2 = na // Deuxième creux RSI pour divergence
+var float price_low2 = na // Prix au deuxième creux
+var int time_low2 = na // Timestamp du deuxième creux
+var float rsi_low3 = na // Troisième creux RSI (variante alternative)
+var float price_low3 = na // Prix au troisième creux
+var int time_low3 = na // Timestamp du troisième creux
 
 // === Variables pour les divergences RSI (Short) ===
-var float rsi_high1 = na
-var float price_high1 = na
-var int time_high1 = na
-var float rsi_high2 = na
-var float price_high2 = na
-var int time_high2 = na
-var float rsi_high3 = na
-var float price_high3 = na
-var int time_high3 = na
+// Variables persistantes pour suivre les sommets RSI et prix (positions Short)
+var float rsi_high1 = na // Premier sommet RSI détecté
+var float price_high1 = na // Prix au premier sommet
+var int time_high1 = na // Timestamp du premier sommet
+var float rsi_high2 = na // Deuxième sommet RSI pour divergence
+var float price_high2 = na // Prix au deuxième sommet
+var int time_high2 = na // Timestamp du deuxième sommet
+var float rsi_high3 = na // Troisième sommet RSI (variante alternative)
+var float price_high3 = na // Prix au troisième sommet
+var int time_high3 = na // Timestamp du troisième sommet
 
 // Variables communes pour les trades
-var float entry_price = na
-var float sl_price = na
-var float tp_price = na
-var bool was_in_position = false
+var float entry_price = na // Prix d'entrée d'une position
+var float sl_price = na // Prix du Stop Loss
+var float tp_price = na // Prix du Take Profit
+var bool was_in_position = false // Indicateur pour savoir si une position était active
 
 // === Variables pour les POI ===
+// Définition d'un type personnalisé pour gérer les POI
 type poi
-    float poiLevel
-    bool poiTapped
-    int poiTappedAt
-    int poiTimeLevelActive
+    float poiLevel // Niveau de prix calculé pour le POI
+    bool poiTapped // Indicateur si le POI a été retouché
+    int poiTappedAt // Timestamp de la retouche
+    int poiTimeLevelActive // Quand le POI devient actif pour les trades
 
-var poi_array = array.new<poi>(0)
+var poi_array = array.new<poi>(0) // Tableau dynamique pour stocker les POI détectés
 
 // Extraire les heures de la session POI
-poi_start_time_str = str.substring(poi_range_session, 0, 4)
-poi_end_time_str = str.substring(poi_range_session, 5, 9)
-poi_session_start_hour = math.floor(str.tonumber(str.substring(poi_start_time_str, 0, 2)))
-poi_session_start_minute = math.floor(str.tonumber(str.substring(poi_start_time_str, 2, 4)))
-poi_session_end_hour = math.floor(str.tonumber(str.substring(poi_end_time_str, 0, 2)))
-poi_session_end_minute = math.floor(str.tonumber(str.substring(poi_end_time_str, 2, 4)))
+poi_start_time_str = str.substring(poi_range_session, 0, 4) // Extrait l'heure de début (ex. "1100")
+poi_end_time_str = str.substring(poi_range_session, 5, 9) // Extrait l'heure de fin (ex. "1330")
+poi_session_start_hour = math.floor(str.tonumber(str.substring(poi_start_time_str, 0, 2))) // Heure de début (ex. 11)
+poi_session_start_minute = math.floor(str.tonumber(str.substring(poi_start_time_str, 2, 4))) // Minute de début (ex. 00)
+poi_session_end_hour = math.floor(str.tonumber(str.substring(poi_end_time_str, 0, 2))) // Heure de fin (ex. 13)
+poi_session_end_minute = math.floor(str.tonumber(str.substring(poi_end_time_str, 2, 4))) // Minute de fin (ex. 30)
 
-// Fonction pour vérifier si un timestamp est dans la session POI
+// Fonction pour vérifier si une barre est dans la session POI
 is_timestamp_in_session(timestamp) =>
-    session_start_time = timestamp(time_zone, year(timestamp), month(timestamp), dayofmonth(timestamp), poi_session_start_hour, poi_session_start_minute)
-    session_end_time = timestamp(time_zone, year(timestamp), month(timestamp), dayofmonth(timestamp), poi_session_end_hour, poi_session_end_minute)
-    timestamp >= session_start_time and timestamp < session_end_time
+    session_start_time = timestamp(time_zone, year(timestamp), month(timestamp), dayofmonth(timestamp), poi_session_start_hour, poi_session_start_minute) // Timestamp de début de session
+    session_end_time = timestamp(time_zone, year(timestamp), month(timestamp), dayofmonth(timestamp), poi_session_end_hour, poi_session_end_minute) // Timestamp de fin de session
+    timestamp >= session_start_time and timestamp < session_end_time // Retourne vrai si dans la session
 
-// Fonction pour calculer le timestamp où le POI devient "actif"
+// Fonction pour calculer quand un POI devient actif
 get_active_timestamp(poi_end_timestamp) =>
-    active_from = 0
-    if dayofweek(poi_end_timestamp) == dayofweek.friday
-        active_from := poi_end_timestamp + (track_taps_from * 60 * 1000) + (2 * 86400000)
+    active_from = 0 // Variable temporaire pour le timestamp actif
+    if dayofweek(poi_end_timestamp) == dayofweek.friday // Si la fin de session est un vendredi
+        active_from := poi_end_timestamp + (track_taps_from * 60 * 1000) + (2 * 86400000) // Ajoute le délai + 2 jours pour le week-end
     else
-        active_from := poi_end_timestamp + (track_taps_from * 60 * 1000)
-    active_from
+        active_from := poi_end_timestamp + (track_taps_from * 60 * 1000) // Ajoute simplement le délai en minutes
+    active_from // Retourne le timestamp où le POI devient actif
 
 // === Détection des POI ===
-var float poi_range_high = na
-var float poi_range_low = na
-var int poi_range_start = na
-var int poi_range_end = na
+// Variables pour suivre les niveaux de la session POI
+var float poi_range_high = na // Plus haut prix dans la session POI
+var float poi_range_low = na // Plus bas prix dans la session POI
+var int poi_range_start = na // Timestamp de début de la session
+var int poi_range_end = na // Timestamp de fin de la session
 
-if is_timestamp_in_session(time)
-    if na(poi_range_start)
-        poi_range_start := time
-    poi_range_high := math.max(high, na(poi_range_high) ? high : poi_range_high)
-    poi_range_low := math.min(low, na(poi_range_low) ? low : poi_range_low)
-else
-    if not na(poi_range_start) and na(poi_range_end)
-        poi_range_end := time[1]
-        poi_level = poi_range_low + (poi_range_high - poi_range_low) / 2.0
-        new_poi = poi.new()
-        new_poi.poiLevel := poi_level
-        new_poi.poiTimeLevelActive := get_active_timestamp(poi_range_end)
-        poi_array.push(new_poi)
-        if array.size(poi_array) > 5
-            array.shift(poi_array)
-        poi_range_start := na
-        poi_range_end := na
-        poi_range_high := na
-        poi_range_low := na
+if is_timestamp_in_session(time) // Si la barre actuelle est dans la session POI
+    if na(poi_range_start) // Si c'est le début de la session
+        poi_range_start := time // Enregistre le timestamp de début
+    poi_range_high := math.max(high, na(poi_range_high) ? high : poi_range_high) // Met à jour le plus haut
+    poi_range_low := math.min(low, na(poi_range_low) ? low : poi_range_low) // Met à jour le plus bas
+else // Si la session est terminée
+    if not na(poi_range_start) and na(poi_range_end) // Si la session a commencé mais pas encore fini
+        poi_range_end := time[1] // Enregistre le timestamp de fin (barre précédente)
+        poi_level = poi_range_low + (poi_range_high - poi_range_low) / 2.0 // Calcule le niveau POI comme le midpoint
+        new_poi = poi.new() // Crée une nouvelle instance de POI
+        new_poi.poiLevel := poi_level // Assigne le niveau calculé
+        new_poi.poiTimeLevelActive := get_active_timestamp(poi_range_end) // Définit quand il devient actif
+        poi_array.push(new_poi) // Ajoute le POI au tableau
+        if array.size(poi_array) > 5 // Limite le tableau à 5 POI pour éviter surcharge
+            array.shift(poi_array) // Supprime le plus ancien
+        poi_range_start := na // Réinitialise pour la prochaine session
+        poi_range_end := na // Réinitialise
+        poi_range_high := na // Réinitialise
+        poi_range_low := na // Réinitialise
 
 // === Détection des retouches de POI ===
-var bool poi_tapped_recently = false
-var int last_poi_tapped_bar = na
-if array.size(poi_array) > 0
-    for i = 0 to array.size(poi_array) - 1
-        current_poi = array.get(poi_array, i)
-        if not current_poi.poiTapped and time > current_poi.poiTimeLevelActive
-            if low <= current_poi.poiLevel and high >= current_poi.poiLevel
-                current_poi.poiTapped := true
-                current_poi.poiTappedAt := time
-                poi_tapped_recently := true
-                last_poi_tapped_bar := bar_index
+// Variables pour suivre les retouches récentes
+var bool poi_tapped_recently = false // Indicateur si un POI a été retouché récemment
+var int last_poi_tapped_bar = na // Index de la dernière barre où un POI a été retouché
 
-poi_tapped_recently := poi_tapped_recently and (bar_index - last_poi_tapped_bar) <= poi_window
+if array.size(poi_array) > 0 // Si des POI existent dans le tableau
+    for i = 0 to array.size(poi_array) - 1 // Parcourt tous les POI
+        current_poi = array.get(poi_array, i) // Récupère le POI actuel
+        if not current_poi.poiTapped and time > current_poi.poiTimeLevelActive // Si pas encore retouché et actif
+            if low <= current_poi.poiLevel and high >= current_poi.poiLevel // Si le prix traverse le niveau POI
+                current_poi.poiTapped := true // Marque comme retouché
+                current_poi.poiTappedAt := time // Enregistre le timestamp de la retouche
+                poi_tapped_recently := true // Indique une retouche récente
+                last_poi_tapped_bar := bar_index // Enregistre l'index de la barre
+
+poi_tapped_recently := poi_tapped_recently and (bar_index - last_poi_tapped_bar) <= poi_window // Vérifie si la retouche est dans la fenêtre définie
 
 // === Détection des divergences haussières RSI (Long) ===
-if rsi < level30 and rsi > lowest_rsi[1] and rsi < 30
-    rsi_low1 := rsi
-    price_low1 := low
-    time_low1 := time
-    rsi_low2 := na
-    price_low2 := na
-    time_low2 := na
-    rsi_low3 := na
-    price_low3 := na
-    time_low3 := na
+// Logique pour détecter une divergence haussière et entrer en position Long
+if rsi < level30 and rsi > lowest_rsi[1] and rsi < 30 // Si RSI dans la zone survente et pas un creux absolu
+    rsi_low1 := rsi // Enregistre le premier creux RSI
+    price_low1 := low // Enregistre le prix au premier creux
+    time_low1 := time // Enregistre le timestamp
+    rsi_low2 := na // Réinitialise le deuxième creux
+    price_low2 := na // Réinitialise
+    time_low2 := na // Réinitialise
+    rsi_low3 := na // Réinitialise la variante
+    price_low3 := na // Réinitialise
+    time_low3 := na // Réinitialise
 
-if not na(rsi_low1) and rsi < level30 and rsi > rsi_low1 and low < price_low1 and rsi < highest_rsi[1]
-    rsi_diff = (rsi - rsi_low1) / rsi_low1 * 100
-    price_diff = (price_low1 - low) / price_low1 * 100
-    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min
-        rsi_low2 := rsi
-        price_low2 := low
-        time_low2 := time
+if not na(rsi_low1) and rsi < level30 and rsi > rsi_low1 and low < price_low1 and rsi < highest_rsi[1] // Cherche un deuxième creux divergent
+    rsi_diff = (rsi - rsi_low1) / rsi_low1 * 100 // Calcule la différence RSI en %
+    price_diff = (price_low1 - low) / price_low1 * 100 // Calcule la différence de prix en %
+    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min // Si les différences dépassent les seuils minimum
+        rsi_low2 := rsi // Enregistre le deuxième creux RSI
+        price_low2 := low // Enregistre le prix
+        time_low2 := time // Enregistre le timestamp
 
-if not na(rsi_low2) and cross_above_rsi and rsi > rsi_low2 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_low1 < 30
-    line.new(time_low1, rsi_low1, time_low2, rsi_low2, xloc=xloc.bar_time, extend=extend.none, color=color.green, style=line.style_solid)
-    strategy.entry("Long2", strategy.long)
-    entry_price := close
-    sl_price := close - atr * sl_atr_mult  // SL basé sur ATR comme dans le code original
-    tp_price := close + atr * tp_atr_mult  // TP basé sur ATR comme dans le code original
-    label.new(bar_index, low, "Long Entry", color=color.green, textcolor=color.white, style=label.style_label_up)
-    rsi_low2 := na
-    poi_tapped_recently := false
+if not na(rsi_low2) and cross_above_rsi and rsi > rsi_low2 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_low1 < 30 // Conditions d'entrée Long
+    line.new(time_low1, rsi_low1, time_low2, rsi_low2, xloc=xloc.bar_time, extend=extend.none, color=color.green, style=line.style_solid) // Dessine la divergence sur le graphique
+    strategy.entry("Long2", strategy.long) // Ouvre une position Long
+    entry_price := close // Enregistre le prix d'entrée
+    sl_price := close - atr * sl_atr_mult // Calcule le SL basé sur l'ATR
+    tp_price := close + atr * tp_atr_mult // Calcule le TP basé sur l'ATR
+    label.new(bar_index, low, "Long Entry", color=color.green, textcolor=color.white, style=label.style_label_up) // Affiche un label d'entrée
+    rsi_low2 := na // Réinitialise pour éviter double entrée
+    poi_tapped_recently := false // Réinitialise la retouche POI
 
-if not na(rsi_low1) and rsi < level30 and rsi > rsi_low1 and low < price_low1 and rsi < highest_rsi[1]
-    rsi_diff = (rsi - rsi_low1) / rsi_low1 * 100
-    price_diff = (price_low1 - low) / price_low1 * 100
-    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min
-        rsi_low3 := rsi
-        price_low3 := low
-        time_low3 := time
+if not na(rsi_low1) and rsi < level30 and rsi > rsi_low1 and low < price_low1 and rsi < highest_rsi[1] // Variante pour un troisième creux
+    rsi_diff = (rsi - rsi_low1) / rsi_low1 * 100 // Calcule la différence RSI
+    price_diff = (price_low1 - low) / price_low1 * 100 // Calcule la différence de prix
+    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min // Si divergence valide
+        rsi_low3 := rsi // Enregistre le troisième creux
+        price_low3 := low // Enregistre le prix
+        time_low3 := time // Enregistre le timestamp
 
-if not na(rsi_low3) and cross_above_rsi and rsi > rsi_low3 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_low1 < 30
-    line.new(time_low1, rsi_low1, time_low3, rsi_low3, xloc=xloc.bar_time, extend=extend.none, color=color.blue, style=line.style_solid)
-    strategy.entry("Long3", strategy.long)
-    entry_price := close
-    sl_price := close - atr * sl_atr_mult  // SL basé sur ATR comme dans le code original
-    tp_price := close + atr * tp_atr_mult  // TP basé sur ATR comme dans le code original
-    label.new(bar_index, low, "Long Entry", color=color.green, textcolor=color.white, style=label.style_label_up)
-    rsi_low3 := na
-    poi_tapped_recently := false
+if not na(rsi_low3) and cross_above_rsi and rsi > rsi_low3 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_low1 < 30 // Entrée Long avec troisième creux
+    line.new(time_low1, rsi_low1, time_low3, rsi_low3, xloc=xloc.bar_time, extend=extend.none, color=color.blue, style=line.style_solid) // Dessine la divergence
+    strategy.entry("Long3", strategy.long) // Ouvre une position Long
+    entry_price := close // Enregistre le prix d'entrée
+    sl_price := close - atr * sl_atr_mult // Calcule le SL
+    tp_price := close + atr * tp_atr_mult // Calcule le TP
+    label.new(bar_index, low, "Long Entry", color=color.green, textcolor=color.white, style=label.style_label_up) // Affiche un label
+    rsi_low3 := na // Réinitialise
+    poi_tapped_recently := false // Réinitialise
 
 // === Détection des divergences baissières RSI (Short) ===
-if rsi > level70 and rsi < highest_rsi[1] and rsi > 70
-    rsi_high1 := rsi
-    price_high1 := high
-    time_high1 := time
-    rsi_high2 := na
-    price_high2 := na
-    time_high2 := na
-    rsi_high3 := na
-    price_high3 := na
-    time_high3 := na
+// Logique pour détecter une divergence baissière et entrer en position Short
+if rsi > level70 and rsi < highest_rsi[1] and rsi > 70 // Si RSI dans la zone surachat et pas un sommet absolu
+    rsi_high1 := rsi // Enregistre le premier sommet RSI
+    price_high1 := high // Enregistre le prix au premier sommet
+    time_high1 := time // Enregistre le timestamp
+    rsi_high2 := na // Réinitialise le deuxième sommet
+    price_high2 := na // Réinitialise
+    time_high2 := na // Réinitialise
+    rsi_high3 := na // Réinitialise la variante
+    price_high3 := na // Réinitialise
+    time_high3 := na // Réinitialise
 
-if not na(rsi_high1) and rsi > level70 and rsi < rsi_high1 and high > price_high1 and rsi > lowest_rsi[1]
-    rsi_diff = (rsi_high1 - rsi) / rsi_high1 * 100
-    price_diff = (high - price_high1) / price_high1 * 100
-    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min
-        rsi_high2 := rsi
-        price_high2 := high
-        time_high2 := time
+if not na(rsi_high1) and rsi > level70 and rsi < rsi_high1 and high > price_high1 and rsi > lowest_rsi[1] // Cherche un deuxième sommet divergent
+    rsi_diff = (rsi_high1 - rsi) / rsi_high1 * 100 // Calcule la différence RSI en %
+    price_diff = (high - price_high1) / price_high1 * 100 // Calcule la différence de prix en %
+    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min // Si les différences dépassent les seuils
+        rsi_high2 := rsi // Enregistre le deuxième sommet RSI
+        price_high2 := high // Enregistre le prix
+        time_high2 := time // Enregistre le timestamp
 
-if not na(rsi_high2) and cross_below_rsi and rsi < rsi_high2 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_high1 > 70
-    line.new(time_high1, rsi_high1, time_high2, rsi_high2, xloc=xloc.bar_time, extend=extend.none, color=color.red, style=line.style_solid)
-    strategy.entry("Short2", strategy.short)
-    entry_price := close
-    sl_price := close * (1 + short_sl_percent / 100)  // SL à 5% au-dessus
-    tp_price := close * (1 - short_tp_percent / 100)  // TP à 5% en dessous
-    label.new(bar_index, high, "Short Entry", color=color.red, textcolor=color.white, style=label.style_label_down)
-    rsi_high2 := na
-    poi_tapped_recently := false
+if not na(rsi_high2) and cross_below_rsi and rsi < rsi_high2 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_high1 > 70 // Conditions d'entrée Short
+    line.new(time_high1, rsi_high1, time_high2, rsi_high2, xloc=xloc.bar_time, extend=extend.none, color=color.red, style=line.style_solid) // Dessine la divergence
+    strategy.entry("Short2", strategy.short) // Ouvre une position Short
+    entry_price := close // Enregistre le prix d'entrée
+    sl_price := close * (1 + short_sl_percent / 100) // Calcule le SL à 5% au-dessus
+    tp_price := close * (1 - short_tp_percent / 100) // Calcule le TP à 5% en dessous
+    label.new(bar_index, high, "Short Entry", color=color.red, textcolor=color.white, style=label.style_label_down) // Affiche un label d'entrée
+    rsi_high2 := na // Réinitialise
+    poi_tapped_recently := false // Réinitialise
 
-if not na(rsi_high1) and rsi > level70 and rsi < rsi_high1 and high > price_high1 and rsi > lowest_rsi[1]
-    rsi_diff = (rsi_high1 - rsi) / rsi_high1 * 100
-    price_diff = (high - price_high1) / price_high1 * 100
-    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min
-        rsi_high3 := rsi
-        price_high3 := high
-        time_high3 := time
+if not na(rsi_high1) and rsi > level70 and rsi < rsi_high1 and high > price_high1 and rsi > lowest_rsi[1] // Variante pour un troisième sommet
+    rsi_diff = (rsi_high1 - rsi) / rsi_high1 * 100 // Calcule la différence RSI
+    price_diff = (high - price_high1) / price_high1 * 100 // Calcule la différence de prix
+    if rsi_diff >= rsi_diff_min and price_diff >= price_diff_min // Si divergence valide
+        rsi_high3 := rsi // Enregistre le troisième sommet
+        price_high3 := high // Enregistre le prix
+        time_high3 := time // Enregistre le timestamp
 
-if not na(rsi_high3) and cross_below_rsi and rsi < rsi_high3 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_high1 > 70
-    line.new(time_high1, rsi_high1, time_high3, rsi_high3, xloc=xloc.bar_time, extend=extend.none, color=color.purple, style=line.style_solid)
-    strategy.entry("Short3", strategy.short)
-    entry_price := close
-    sl_price := close * (1 + short_sl_percent / 100)  // SL à 5% au-dessus
-    tp_price := close * (1 - short_tp_percent / 100)  // TP à 5% en dessous
-    label.new(bar_index, high, "Short Entry", color=color.red, textcolor=color.white, style=label.style_label_down)
-    rsi_high3 := na
-    poi_tapped_recently := false
+if not na(rsi_high3) and cross_below_rsi and rsi < rsi_high3 and poi_tapped_recently and strategy.position_size == 0 and volatility_filter and rsi_high1 > 70 // Entrée Short avec troisième sommet
+    line.new(time_high1, rsi_high1, time_high3, rsi_high3, xloc=xloc.bar_time, extend=extend.none, color=color.purple, style=line.style_solid) // Dessine la divergence
+    strategy.entry("Short3", strategy.short) // Ouvre une position Short
+    entry_price := close // Enregistre le prix d'entrée
+    sl_price := close * (1 + short_sl_percent / 100) // Calcule le SL
+    tp_price := close * (1 - short_tp_percent / 100) // Calcule le TP
+    label.new(bar_index, high, "Short Entry", color=color.red, textcolor=color.white, style=label.style_label_down) // Affiche un label
+    rsi_high3 := na // Réinitialise
+    poi_tapped_recently := false // Réinitialise
 
 // === Conditions de sortie ===
-if strategy.position_size > 0  // Long
-    strategy.exit("Exit Long", from_entry="Long2", stop=sl_price, limit=tp_price)
-    strategy.exit("Exit Long", from_entry="Long3", stop=sl_price, limit=tp_price)
-if strategy.position_size < 0  // Short
-    strategy.exit("Exit Short", from_entry="Short2", stop=sl_price, limit=tp_price)
-    strategy.exit("Exit Short", from_entry="Short3", stop=sl_price, limit=tp_price)
+// Gestion des sorties pour les positions Long et Short
+if strategy.position_size > 0 // Si en position Long
+    strategy.exit("Exit Long", from_entry="Long2", stop=sl_price, limit=tp_price) // Ferme Long2 sur SL ou TP
+    strategy.exit("Exit Long", from_entry="Long3", stop=sl_price, limit=tp_price) // Ferme Long3 sur SL ou TP
+if strategy.position_size < 0 // Si en position Short
+    strategy.exit("Exit Short", from_entry="Short2", stop=sl_price, limit=tp_price) // Ferme Short2 sur SL ou TP
+    strategy.exit("Exit Short", from_entry="Short3", stop=sl_price, limit=tp_price) // Ferme Short3 sur SL ou TP
 
 // === Détection de la sortie et affichage des labels ===
-if strategy.position_size == 0 and was_in_position
-    if strategy.closedtrades > 0
-        last_trade_profit = strategy.closedtrades.profit(strategy.closedtrades - 1)
-        if last_trade_profit < 0
-            label.new(bar_index, strategy.position_size[1] > 0 ? high : low, "SL", color=color.red, textcolor=color.white, style=strategy.position_size[1] > 0 ? label.style_label_down : label.style_label_up)
-        else
-            label.new(bar_index, strategy.position_size[1] > 0 ? high : low, "TP", color=color.green, textcolor=color.white, style=strategy.position_size[1] > 0 ? label.style_label_down : label.style_label_up)
-    entry_price := na
-    sl_price := na
-    tp_price := na
-was_in_position := strategy.position_size != 0
+// Affiche des labels pour indiquer si la sortie était un SL ou un TP
+if strategy.position_size == 0 and was_in_position // Si plus en position mais était en position avant
+    if strategy.closedtrades > 0 // Si des trades ont été fermés
+        last_trade_profit = strategy.closedtrades.profit(strategy.closedtrades - 1) // Récupère le profit du dernier trade
+        if last_trade_profit < 0 // Si perte (SL touché)
+            label.new(bar_index, strategy.position_size[1] > 0 ? high : low, "SL", color=color.red, textcolor=color.white, style=strategy.position_size[1] > 0 ? label.style_label_down : label.style_label_up) // Affiche "SL"
+        else // Si gain (TP touché)
+            label.new(bar_index, strategy.position_size[1] > 0 ? high : low, "TP", color=color.green, textcolor=color.white, style=strategy.position_size[1] > 0 ? label.style_label_down : label.style_label_up) // Affiche "TP"
+    entry_price := na // Réinitialise le prix d'entrée
+    sl_price := na // Réinitialise le SL
+    tp_price := na // Réinitialise le TP
+was_in_position := strategy.position_size != 0 // Met à jour l'état de la position
 
 // === Affichage des niveaux d'entrée, TP et SL ===
-plot(entry_price, title="Prix d'entrée", color=color.blue, linewidth=1, style=plot.style_linebr)
-plot(tp_price, title="TP", color=color.green, linewidth=1, style=plot.style_linebr)
-plot(sl_price, title="SL", color=color.red, linewidth=1, style=plot.style_linebr)
+// Trace les lignes pour visualiser les niveaux sur le graphique
+plot(entry_price, title="Prix d'entrée", color=color.blue, linewidth=1, style=plot.style_linebr) // Affiche le prix d'entrée en bleu
+plot(tp_price, title="TP", color=color.green, linewidth=1, style=plot.style_linebr) // Affiche le TP en vert
+plot(sl_price, title="SL", color=color.red, linewidth=1, style=plot.style_linebr) // Affiche le SL en rouge
